@@ -163,8 +163,6 @@ type Raft struct {
 	// value.
 	// (Used in 3A conf change)
 	PendingConfIndex uint64
-
-	Storage Storage
 }
 
 // newRaft return a raft peer with the given config
@@ -174,15 +172,21 @@ func newRaft(c *Config) *Raft {
 	}
 	// Your Code Here (2A).
 	r := &Raft{
-		id:               c.ID,
-		RaftLog:          &RaftLog{},
+		id: c.ID,
+		RaftLog: &RaftLog{
+			storage:         c.Storage,
+			committed:       0,
+			applied:         0,
+			stabled:         0,
+			entries:         []pb.Entry{},
+			pendingSnapshot: &pb.Snapshot{},
+		},
 		Prs:              map[uint64]*Progress{},
 		State:            StateFollower,
 		votes:            map[uint64]bool{},
 		msgs:             []pb.Message{},
 		heartbeatTimeout: c.HeartbeatTick,
 		electionTimeout:  c.ElectionTick,
-		Storage:          c.Storage,
 	}
 	for _, peer := range c.peers {
 		r.votes[peer] = false
@@ -195,7 +199,23 @@ func newRaft(c *Config) *Raft {
 // current commit index to the given peer. Returns true if a message was sent.
 func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
-	return false
+	r.msgs = append(r.msgs, pb.Message{
+		MsgType: pb.MessageType_MsgAppend,
+		To:      to,
+		From:    r.id,
+		Term:    r.Term,
+		LogTerm: 0,
+		Index:   0,
+		Entries: []*pb.Entry{
+			{
+				EntryType: 0,
+				Term:      0,
+				Index:     0,
+				Data:      nil,
+			},
+		},
+	})
+	return true
 }
 
 // sendHeartbeat sends a heartbeat RPC to the given peer.
@@ -292,17 +312,6 @@ func (r *Raft) becomeLeader() {
 	r.Lead = r.id
 	r.heartbeatElapsed = 0
 	// TODO noop entry
-	for to := range r.votes {
-		if to == r.id {
-			continue
-		}
-		r.msgs = append(r.msgs, pb.Message{
-			MsgType: pb.MessageType_MsgHeartbeat,
-			To:      to,
-			From:    r.id,
-			Term:    r.Term,
-		})
-	}
 }
 
 // Step the entrance of handle message, see `MessageType`
@@ -418,6 +427,7 @@ func (r *Raft) handleMsgHup() {
 	r.becomeCandidate()
 	if len(r.votes) == 1 {
 		r.becomeLeader()
+		return
 	}
 	r.bcastReqVote()
 }
