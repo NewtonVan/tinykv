@@ -246,13 +246,12 @@ func (r *Raft) tickHeartBeat() {
 		return
 	}
 
-	r.heartbeatElapsed = 0
-	for peer := range r.votes {
-		if peer == r.id {
-			continue
-		}
-		r.sendHeartbeat(peer)
-	}
+	r.Step(pb.Message{
+		MsgType: pb.MessageType_MsgBeat,
+		To:      r.id,
+		From:    r.id,
+		Term:    r.Term,
+	})
 }
 
 // becomeFollower transform this peer's state to Follower
@@ -263,6 +262,10 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	r.randomElectionTimeout = r.electionTimeout + rand.Intn(r.electionTimeout)
 	r.Term = term
 	r.Lead = lead
+	// todo whether add if
+	if lead == None {
+		r.Vote = lead
+	}
 }
 
 // becomeCandidate transform this peer's state to candidate
@@ -272,7 +275,7 @@ func (r *Raft) becomeCandidate() {
 	r.electionElapsed = 0
 	r.randomElectionTimeout = r.electionTimeout + rand.Intn(r.electionTimeout)
 	r.Term++
-	r.Lead = 0
+	r.Lead = None
 	r.Vote = r.id
 
 	for peer := range r.votes {
@@ -289,6 +292,17 @@ func (r *Raft) becomeLeader() {
 	r.Lead = r.id
 	r.heartbeatElapsed = 0
 	// TODO noop entry
+	for to := range r.votes {
+		if to == r.id {
+			continue
+		}
+		r.msgs = append(r.msgs, pb.Message{
+			MsgType: pb.MessageType_MsgHeartbeat,
+			To:      to,
+			From:    r.id,
+			Term:    r.Term,
+		})
+	}
 }
 
 // Step the entrance of handle message, see `MessageType`
@@ -311,12 +325,11 @@ func (r *Raft) stepFollower(m pb.Message) {
 	case pb.MessageType_MsgHup:
 		r.handleMsgHup()
 	case pb.MessageType_MsgAppend:
-		if m.Term < r.Term {
-			return
-		}
-		r.becomeFollower(m.Term, m.From)
+		r.handleAppendEntries(m)
 	case pb.MessageType_MsgRequestVote:
 		r.handleReqVote(m)
+	case pb.MessageType_MsgHeartbeat:
+		r.handleHeartbeat(m)
 	}
 }
 
@@ -325,10 +338,9 @@ func (r *Raft) stepCandidate(m pb.Message) {
 	case pb.MessageType_MsgHup:
 		r.handleMsgHup()
 	case pb.MessageType_MsgAppend:
-		if m.Term < r.Term {
-			return
-		}
-		r.becomeFollower(m.Term, m.From)
+		r.handleAppendEntries(m)
+	case pb.MessageType_MsgRequestVote:
+		r.handleReqVote(m)
 	case pb.MessageType_MsgRequestVoteResponse:
 		cnt, err := r.readBallots(m)
 		if err != nil {
@@ -337,53 +349,40 @@ func (r *Raft) stepCandidate(m pb.Message) {
 		if (cnt << 1) > len(r.votes) {
 			r.becomeLeader()
 		}
+	case pb.MessageType_MsgHeartbeat:
+		r.handleHeartbeat(m)
 	}
-}
-
-func (r *Raft) readBallots(m pb.Message) (int, error) {
-	if m.Term < r.Term {
-		return 0, fmt.Errorf("ineffective ballot, msg term: %v, node term: %v", m.Term, r.Term)
-	}
-	if m.Term > r.Term {
-		log.Error("invalid case while handling MessageType_MsgRequestVoteResponse",
-			zap.Uint64("message term", m.Term),
-			zap.Uint64("node term", r.Term),
-		)
-		// todo whether return error
-		return 0, fmt.Errorf("invalid case while handling MessageType_MsgRequestVoteResponse, msg term: %v, node term: %v", m.Term, r.Term)
-	}
-
-	r.votes[m.From] = !m.Reject
-	var cnt int
-	for _, v := range r.votes {
-		if v {
-			cnt++
-		}
-	}
-
-	return cnt, nil
 }
 
 func (r *Raft) stepLeader(m pb.Message) {
 	switch m.MsgType {
+	case pb.MessageType_MsgBeat:
+		r.handleMsgBeat()
 	case pb.MessageType_MsgAppend:
-		if m.Term < r.Term {
-			return
-		}
-		r.becomeFollower(m.Term, m.From)
+		r.handleAppendEntries(m)
+	case pb.MessageType_MsgRequestVote:
+		r.handleReqVote(m)
 	case pb.MessageType_MsgHeartbeat:
-
+		r.handleHeartbeat(m)
 	}
 }
 
 // handleAppendEntries handle AppendEntries RPC request
 func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
+	if m.Term < r.Term {
+		return
+	}
+	r.becomeFollower(m.Term, m.From)
 }
 
 // handleHeartbeat handle Heartbeat RPC request
 func (r *Raft) handleHeartbeat(m pb.Message) {
 	// Your Code Here (2A).
+	if m.Term < r.Term {
+		return
+	}
+	r.becomeFollower(m.Term, m.From)
 }
 
 // handleSnapshot handle Snapshot RPC request
@@ -411,8 +410,6 @@ func (r *Raft) bcastReqVote() {
 			To:      to,
 			From:    r.id,
 			Term:    r.Term,
-			LogTerm: 0,
-			Index:   0,
 		})
 	}
 }
@@ -429,16 +426,16 @@ func (r *Raft) handleReqVote(m pb.Message) {
 	var reject bool
 	if m.Term < r.Term {
 		reject = true
-	}
-	if m.Term > r.Term {
+	} else if m.Term > r.Term {
 		r.becomeFollower(m.Term, None)
 	}
 	if r.Vote != None && r.Vote != m.From {
 		reject = true
 	}
 
-	r.Term = m.Term
-	r.Vote = m.From
+	if r.Vote == None {
+		r.Vote = m.From
+	}
 	r.msgs = append(r.msgs, pb.Message{
 		MsgType: pb.MessageType_MsgRequestVoteResponse,
 		To:      m.From,
@@ -446,4 +443,38 @@ func (r *Raft) handleReqVote(m pb.Message) {
 		Term:    r.Term,
 		Reject:  reject,
 	})
+}
+
+func (r *Raft) readBallots(m pb.Message) (int, error) {
+	if m.Term < r.Term {
+		return 0, fmt.Errorf("ineffective ballot, msg term: %v, node term: %v", m.Term, r.Term)
+	}
+	if m.Term > r.Term {
+		log.Error("invalid case while handling MessageType_MsgRequestVoteResponse",
+			zap.Uint64("message term", m.Term),
+			zap.Uint64("node term", r.Term),
+		)
+		// todo whether return error
+		return 0, fmt.Errorf("invalid case while handling MessageType_MsgRequestVoteResponse, msg term: %v, node term: %v", m.Term, r.Term)
+	}
+
+	r.votes[m.From] = !m.Reject
+	var cnt int
+	for _, v := range r.votes {
+		if v {
+			cnt++
+		}
+	}
+
+	return cnt, nil
+}
+
+func (r *Raft) handleMsgBeat() {
+	r.heartbeatElapsed = 0
+	for peer := range r.votes {
+		if peer == r.id {
+			continue
+		}
+		r.sendHeartbeat(peer)
+	}
 }
