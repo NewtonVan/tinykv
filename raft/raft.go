@@ -16,10 +16,12 @@ package raft
 
 import (
 	"errors"
+	"fmt"
 	"math/rand"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"github.com/pingcap/log"
+	"go.uber.org/zap"
 )
 
 // None is a placeholder node ID used when there is no leader.
@@ -313,6 +315,8 @@ func (r *Raft) stepFollower(m pb.Message) {
 			return
 		}
 		r.becomeFollower(m.Term, m.From)
+	case pb.MessageType_MsgRequestVote:
+		r.handleReqVote(m)
 	}
 }
 
@@ -325,7 +329,39 @@ func (r *Raft) stepCandidate(m pb.Message) {
 			return
 		}
 		r.becomeFollower(m.Term, m.From)
+	case pb.MessageType_MsgRequestVoteResponse:
+		cnt, err := r.readBallots(m)
+		if err != nil {
+			return
+		}
+		if (cnt << 1) > len(r.votes) {
+			r.becomeLeader()
+		}
 	}
+}
+
+func (r *Raft) readBallots(m pb.Message) (int, error) {
+	if m.Term < r.Term {
+		return 0, fmt.Errorf("ineffective ballot, msg term: %v, node term: %v", m.Term, r.Term)
+	}
+	if m.Term > r.Term {
+		log.Error("invalid case while handling MessageType_MsgRequestVoteResponse",
+			zap.Uint64("message term", m.Term),
+			zap.Uint64("node term", r.Term),
+		)
+		// todo whether return error
+		return 0, fmt.Errorf("invalid case while handling MessageType_MsgRequestVoteResponse, msg term: %v, node term: %v", m.Term, r.Term)
+	}
+
+	r.votes[m.From] = !m.Reject
+	var cnt int
+	for _, v := range r.votes {
+		if v {
+			cnt++
+		}
+	}
+
+	return cnt, nil
 }
 
 func (r *Raft) stepLeader(m pb.Message) {
@@ -383,5 +419,31 @@ func (r *Raft) bcastReqVote() {
 
 func (r *Raft) handleMsgHup() {
 	r.becomeCandidate()
+	if len(r.votes) == 1 {
+		r.becomeLeader()
+	}
 	r.bcastReqVote()
+}
+
+func (r *Raft) handleReqVote(m pb.Message) {
+	var reject bool
+	if m.Term < r.Term {
+		reject = true
+	}
+	if m.Term > r.Term {
+		r.becomeFollower(m.Term, None)
+	}
+	if r.Vote != None && r.Vote != m.From {
+		reject = true
+	}
+
+	r.Term = m.Term
+	r.Vote = m.From
+	r.msgs = append(r.msgs, pb.Message{
+		MsgType: pb.MessageType_MsgRequestVoteResponse,
+		To:      m.From,
+		From:    r.id,
+		Term:    r.Term,
+		Reject:  reject,
+	})
 }
