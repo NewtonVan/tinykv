@@ -14,7 +14,11 @@
 
 package raft
 
-import pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+import (
+	"fmt"
+
+	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+)
 
 // RaftLog manage the log entries, its struct look like:
 //
@@ -56,7 +60,14 @@ type RaftLog struct {
 // to the state that it just commits and applies the latest snapshot.
 func newLog(storage Storage) *RaftLog {
 	// Your Code Here (2A).
-	return nil
+	return &RaftLog{
+		storage:         storage,
+		committed:       0,
+		applied:         0,
+		stabled:         0,
+		entries:         []pb.Entry{},
+		pendingSnapshot: &pb.Snapshot{},
+	}
 }
 
 // We need to compact the log entries in some point of time like
@@ -69,23 +80,74 @@ func (l *RaftLog) maybeCompact() {
 // unstableEntries return all the unstable entries
 func (l *RaftLog) unstableEntries() []pb.Entry {
 	// Your Code Here (2A).
-	return nil
+	ret := make([]pb.Entry, 0, len(l.entries))
+	for _, ent := range l.entries {
+		if ent.Index <= l.stabled {
+			continue
+		}
+		ret = append(ret, ent)
+	}
+	return ret
 }
 
 // nextEnts returns all the committed but not applied entries
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
-	return nil
+	for _, ent := range l.entries {
+		if ent.Index > l.committed {
+			return
+		}
+		if ent.Index <= l.applied {
+			continue
+		}
+		ents = append(ents, ent)
+	}
+
+	return
 }
 
 // LastIndex return the last index of the log entries
 func (l *RaftLog) LastIndex() uint64 {
 	// Your Code Here (2A).
-	return 0
+	if len(l.entries) == 0 {
+		return 0
+	}
+
+	return l.entries[len(l.entries)-1].Index
 }
 
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
-	return 0, nil
+	if i == 0 {
+		return 0, nil
+	}
+	if len(l.entries) == 0 {
+		return 0, nil
+	}
+
+	for _, ent := range l.entries {
+		if ent.Index == i {
+			return ent.Term, nil
+		}
+	}
+
+	return 0, fmt.Errorf("not found index: %v", i)
+}
+
+// getEntByIndex return ent in the given index
+func (l *RaftLog) getEntByIndex(i uint64) *pb.Entry {
+	for _, ent := range l.entries {
+		if ent.Index == i {
+			return &ent
+		}
+	}
+
+	return nil
+}
+
+func (l *RaftLog) Append(e *pb.Entry) error {
+	l.entries = append(l.entries, *e)
+
+	return nil
 }

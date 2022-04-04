@@ -171,14 +171,21 @@ func newRaft(c *Config) *Raft {
 		panic(err.Error())
 	}
 	// Your Code Here (2A).
+	var head, rear uint64
+	entries := make([]pb.Entry, 0)
+	head, err := c.Storage.FirstIndex()
+	if err == nil {
+		rear, _ = c.Storage.LastIndex()
+		entries, _ = c.Storage.Entries(head, rear+1)
+	}
 	r := &Raft{
 		id: c.ID,
 		RaftLog: &RaftLog{
 			storage:         c.Storage,
 			committed:       0,
 			applied:         0,
-			stabled:         0,
-			entries:         []pb.Entry{},
+			stabled:         rear,
+			entries:         entries,
 			pendingSnapshot: &pb.Snapshot{},
 		},
 		Prs:              map[uint64]*Progress{},
@@ -190,6 +197,8 @@ func newRaft(c *Config) *Raft {
 	}
 	for _, peer := range c.peers {
 		r.votes[peer] = false
+		// todo
+		r.Prs[peer] = &Progress{}
 	}
 
 	return r
@@ -199,22 +208,23 @@ func newRaft(c *Config) *Raft {
 // current commit index to the given peer. Returns true if a message was sent.
 func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
+	logTerm, _ := r.RaftLog.Term(r.Prs[to].Match)
+	ents := make([]*pb.Entry, 0)
+	li := r.RaftLog.LastIndex()
+	for i := r.Prs[to].Next; i <= li; i++ {
+		ents = append(ents, r.RaftLog.getEntByIndex(i))
+	}
 	r.msgs = append(r.msgs, pb.Message{
 		MsgType: pb.MessageType_MsgAppend,
 		To:      to,
 		From:    r.id,
 		Term:    r.Term,
-		LogTerm: 0,
-		Index:   0,
-		Entries: []*pb.Entry{
-			{
-				EntryType: 0,
-				Term:      0,
-				Index:     0,
-				Data:      nil,
-			},
-		},
+		LogTerm: logTerm,
+		Index:   ents[0].Index - 1,
+		Entries: ents,
+		Commit:  r.RaftLog.committed,
 	})
+
 	return true
 }
 
@@ -312,6 +322,19 @@ func (r *Raft) becomeLeader() {
 	r.Lead = r.id
 	r.heartbeatElapsed = 0
 	// TODO noop entry
+	r.propose([]*pb.Entry{
+		{
+			EntryType: pb.EntryType_EntryNormal,
+			Term:      r.Term,
+			Index:     r.RaftLog.LastIndex() + 1,
+			Data:      nil,
+		},
+	})
+	for _, proc := range r.Prs {
+		proc.Match = 0
+		proc.Next = r.RaftLog.LastIndex()
+	}
+	r.bcastAppend()
 }
 
 // Step the entrance of handle message, see `MessageType`
@@ -367,12 +390,43 @@ func (r *Raft) stepLeader(m pb.Message) {
 	switch m.MsgType {
 	case pb.MessageType_MsgBeat:
 		r.handleMsgBeat()
+	case pb.MessageType_MsgPropose:
+		r.propose(m.Entries)
+		r.bcastAppend()
 	case pb.MessageType_MsgAppend:
 		r.handleAppendEntries(m)
+	case pb.MessageType_MsgAppendResponse:
+		r.handleAppendResp(m)
 	case pb.MessageType_MsgRequestVote:
 		r.handleReqVote(m)
 	case pb.MessageType_MsgHeartbeat:
 		r.handleHeartbeat(m)
+	}
+}
+
+func (r *Raft) propose(ents []*pb.Entry) {
+	li := r.RaftLog.LastIndex()
+	for _, ent := range ents {
+		li++
+		// todo whether in-place update
+		ent.Index = li
+		ent.Term = r.Term
+		r.RaftLog.entries = append(r.RaftLog.entries, *ent)
+	}
+	// todo
+	r.Prs[r.id].Match = li
+	r.Prs[r.id].Next = li
+}
+
+func (r *Raft) bcastAppend() {
+	if len(r.Prs) == 1 {
+		r.RaftLog.committed = r.RaftLog.LastIndex()
+	}
+	for to := range r.votes {
+		if to == r.id {
+			continue
+		}
+		r.sendAppend(to)
 	}
 }
 
@@ -383,6 +437,37 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		return
 	}
 	r.becomeFollower(m.Term, m.From)
+
+	// todo check msg
+	if term, err := r.RaftLog.Term(m.Index); err != nil || term != m.LogTerm {
+		r.msgs = append(r.msgs, pb.Message{
+			MsgType: pb.MessageType_MsgAppendResponse,
+			To:      m.From,
+			From:    r.id,
+			Term:    r.Term,
+			Reject:  true,
+		})
+
+		return
+	}
+
+	// todo apply state Machine
+	if m.Commit > r.RaftLog.committed {
+		r.RaftLog.committed = m.Commit
+	}
+	for _, ent := range m.Entries {
+		r.RaftLog.Append(ent)
+		// todo apply in r.RaftLog.storage.
+	}
+
+	r.msgs = append(r.msgs, pb.Message{
+		MsgType: pb.MessageType_MsgAppendResponse,
+		To:      m.From,
+		From:    r.id,
+		Term:    r.Term,
+		Index:   m.Index + uint64(len(m.Entries)),
+		Reject:  false,
+	})
 }
 
 // handleHeartbeat handle Heartbeat RPC request
@@ -486,5 +571,33 @@ func (r *Raft) handleMsgBeat() {
 			continue
 		}
 		r.sendHeartbeat(peer)
+	}
+}
+
+func (r *Raft) handleAppendResp(m pb.Message) {
+	if m.Term < r.Term {
+		return
+	}
+	if m.Term > r.Term {
+		panic("invalid append response")
+	}
+	r.Prs[m.From].Match = m.Index
+	r.Prs[m.From].Next = m.Index + 1
+	if r.Prs[m.From].Next < r.RaftLog.LastIndex() {
+		r.sendAppend(m.From)
+	}
+
+	// todo commit
+	if m.Index <= r.RaftLog.committed {
+		return
+	}
+	var cnt int
+	for _, proc := range r.Prs {
+		if proc.Match >= m.Index {
+			cnt++
+		}
+	}
+	if (cnt << 1) > len(r.Prs) {
+		r.RaftLog.committed = m.Index
 	}
 }
