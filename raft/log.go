@@ -95,6 +95,7 @@ func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
 	for _, ent := range l.entries {
 		if ent.Index > l.committed {
+			// assure the slice is ordered
 			return
 		}
 		if ent.Index <= l.applied {
@@ -137,6 +138,9 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 
 // getEntByIndex return ent in the given index
 func (l *RaftLog) getEntByIndex(i uint64) *pb.Entry {
+	if i == 0 {
+		return nil
+	}
 	for _, ent := range l.entries {
 		if ent.Index == i {
 			return &ent
