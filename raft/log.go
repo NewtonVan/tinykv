@@ -60,12 +60,18 @@ type RaftLog struct {
 // to the state that it just commits and applies the latest snapshot.
 func newLog(storage Storage) *RaftLog {
 	// Your Code Here (2A).
+	ents := make([]pb.Entry, 0)
+	start, _ := storage.FirstIndex()
+	end, _ := storage.LastIndex()
+	if start <= end {
+		ents, _ = storage.Entries(start, end+1)
+	}
 	return &RaftLog{
 		storage:         storage,
 		committed:       0,
 		applied:         0,
 		stabled:         0,
-		entries:         []pb.Entry{},
+		entries:         ents,
 		pendingSnapshot: &pb.Snapshot{},
 	}
 }

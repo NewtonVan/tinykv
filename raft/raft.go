@@ -240,11 +240,15 @@ func (r *Raft) sendAppend(to uint64) bool {
 // sendHeartbeat sends a heartbeat RPC to the given peer.
 func (r *Raft) sendHeartbeat(to uint64) {
 	// Your Code Here (2A).
+	idx := r.Prs[to].Next - 1
+	logTerm, _ := r.RaftLog.Term(idx)
 	r.msgs = append(r.msgs, pb.Message{
 		MsgType: pb.MessageType_MsgHeartbeat,
 		To:      to,
 		From:    r.id,
 		Term:    r.Term,
+		Index:   idx,
+		LogTerm: logTerm,
 		Commit:  r.RaftLog.committed,
 	})
 }
@@ -456,12 +460,6 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 
 	// todo check msg
 	if term, err := r.RaftLog.Term(m.Index); err != nil || term != m.LogTerm {
-		for i, ent := range r.RaftLog.entries {
-			if ent.Index >= m.Index {
-				r.RaftLog.entries = r.RaftLog.entries[:i]
-				break
-			}
-		}
 		r.msgs = append(r.msgs, pb.Message{
 			MsgType: pb.MessageType_MsgAppendResponse,
 			To:      m.From,
@@ -513,7 +511,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		To:      m.From,
 		From:    r.id,
 		Term:    r.Term,
-		Index:   m.Index + uint64(len(m.Entries)),
+		Index:   r.RaftLog.LastIndex(),
 		Reject:  false,
 	})
 }
@@ -541,12 +539,18 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 }
 
 func (r *Raft) syncCommit(m pb.Message) {
-	if m.Commit > r.RaftLog.committed {
-		if m.Commit > r.RaftLog.LastIndex() {
-			r.RaftLog.committed = r.RaftLog.LastIndex()
-		} else {
-			r.RaftLog.committed = m.Commit
+	if m.Commit <= r.RaftLog.committed {
+		return
+	}
+
+	lastNewEntryIndex := m.Index + uint64(len(m.Entries))
+	if m.Commit > lastNewEntryIndex {
+		if lastNewEntryIndex < r.RaftLog.committed {
+			panic("violate monotonicity of committed index")
 		}
+		r.RaftLog.committed = lastNewEntryIndex
+	} else {
+		r.RaftLog.committed = m.Commit
 	}
 }
 
