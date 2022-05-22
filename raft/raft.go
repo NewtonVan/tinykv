@@ -172,29 +172,15 @@ func newRaft(c *Config) *Raft {
 		panic(err.Error())
 	}
 	// Your Code Here (2A).
-	var head, rear uint64
-	entries := make([]pb.Entry, 0)
-	head, err := c.Storage.FirstIndex()
-	if err == nil {
-		rear, _ = c.Storage.LastIndex()
-		entries, _ = c.Storage.Entries(head, rear+1)
-	}
 	hardState, _, err := c.Storage.InitialState()
 	if err != nil {
 		panic(err)
 	}
 	r := &Raft{
-		id:   c.ID,
-		Term: hardState.Term,
-		Vote: hardState.Vote,
-		RaftLog: &RaftLog{
-			storage:         c.Storage,
-			committed:       0,
-			applied:         0,
-			stabled:         rear,
-			entries:         entries,
-			pendingSnapshot: &pb.Snapshot{},
-		},
+		id:               c.ID,
+		Term:             hardState.Term,
+		Vote:             hardState.Vote,
+		RaftLog:          newLog(c.Storage),
 		Prs:              map[uint64]*Progress{},
 		State:            StateFollower,
 		votes:            map[uint64]bool{},
