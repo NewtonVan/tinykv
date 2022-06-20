@@ -308,6 +308,70 @@ func ClearMeta(engines *engine_util.Engines, kvWB, raftWB *engine_util.WriteBatc
 // never be committed
 func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.WriteBatch) error {
 	// Your Code Here (2B).
+	// purge first, append second
+	if len(entries) <= 0 {
+		return nil
+	}
+
+	head := ps.raftState.HardState.Commit + 1
+	tail := entries[len(entries)-1].Index
+	if head > tail {
+		return nil
+	}
+
+	// delete uncommitted entries
+	if head > entries[0].Index {
+		entries = entries[head-entries[0].Index:]
+	}
+	for i := tail + 1; i <= ps.raftState.LastIndex; i++ {
+		raftWB.DeleteMeta(meta.RaftLogKey(ps.region.Id, i))
+	}
+
+	// append entries
+	for _, entry := range entries {
+		if err := raftWB.SetMeta(meta.RaftLogKey(ps.region.Id, entry.Index), &entry); err != nil {
+			return err
+		}
+	}
+
+	ps.raftState.LastIndex = entries[len(entries)-1].Index
+	ps.raftState.LastTerm = entries[len(entries)-1].Term
+
+	return nil
+}
+
+// deleteNonCandidateTerm delete entries in raftDB, which has the index > the lower bound in `entries`
+func (ps *PeerStorage) deleteNonCandidateTerm(entries []eraftpb.Entry, raftWB *engine_util.WriteBatch) error {
+
+	deletedKeys := make([][]byte, 0)
+	committedKey := meta.RaftLogKey(ps.region.Id, ps.raftState.HardState.Commit)
+	txn := ps.Engines.Raft.NewTransaction(false)
+	defer txn.Discard()
+	iter := txn.NewIterator(badger.DefaultIteratorOptions)
+	defer iter.Close()
+
+	for iter.Seek(committedKey); iter.Valid(); iter.Next() {
+		item := iter.Item()
+		if bytes.Compare(item.Key(), committedKey) <= 0 {
+			continue
+		}
+		val, err := item.Value()
+		if err != nil {
+			return err
+		}
+		entry := eraftpb.Entry{}
+		if err = entry.Unmarshal(val); err != nil {
+			return err
+		}
+		if entry.Index < entries[0].Index {
+			continue
+		}
+		deletedKeys = append(deletedKeys, item.Key())
+	}
+	for _, key := range deletedKeys {
+		raftWB.DeleteMeta(key)
+	}
+
 	return nil
 }
 
@@ -331,6 +395,25 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, error) {
 	// Hint: you may call `Append()` and `ApplySnapshot()` in this function
 	// Your Code Here (2B/2C).
+	raftWB := &engine_util.WriteBatch{}
+	//kvWB := &engine_util.WriteBatch{}
+	if err := ps.Append(ready.Entries, raftWB); err != nil {
+		return nil, err
+	}
+	//ps.ApplySnapshot(ready.Snapshot, kvWB, raftWB)
+	ps.raftState.HardState = &eraftpb.HardState{
+		Term:                 ready.HardState.Term,
+		Vote:                 ready.HardState.Vote,
+		Commit:               ready.HardState.Commit,
+		XXX_NoUnkeyedLiteral: ready.HardState.XXX_NoUnkeyedLiteral,
+		XXX_unrecognized:     ready.HardState.XXX_unrecognized,
+		XXX_sizecache:        ready.HardState.XXX_sizecache,
+	}
+	if err := raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState); err != nil {
+		return nil, err
+	}
+
+	raftWB.MustWriteToDB(ps.Engines.Raft)
 	return nil, nil
 }
 
