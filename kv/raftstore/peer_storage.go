@@ -340,41 +340,6 @@ func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.Write
 	return nil
 }
 
-// deleteNonCandidateTerm delete entries in raftDB, which has the index > the lower bound in `entries`
-func (ps *PeerStorage) deleteNonCandidateTerm(entries []eraftpb.Entry, raftWB *engine_util.WriteBatch) error {
-
-	deletedKeys := make([][]byte, 0)
-	committedKey := meta.RaftLogKey(ps.region.Id, ps.raftState.HardState.Commit)
-	txn := ps.Engines.Raft.NewTransaction(false)
-	defer txn.Discard()
-	iter := txn.NewIterator(badger.DefaultIteratorOptions)
-	defer iter.Close()
-
-	for iter.Seek(committedKey); iter.Valid(); iter.Next() {
-		item := iter.Item()
-		if bytes.Compare(item.Key(), committedKey) <= 0 {
-			continue
-		}
-		val, err := item.Value()
-		if err != nil {
-			return err
-		}
-		entry := eraftpb.Entry{}
-		if err = entry.Unmarshal(val); err != nil {
-			return err
-		}
-		if entry.Index < entries[0].Index {
-			continue
-		}
-		deletedKeys = append(deletedKeys, item.Key())
-	}
-	for _, key := range deletedKeys {
-		raftWB.DeleteMeta(key)
-	}
-
-	return nil
-}
-
 // Apply the peer with given snapshot
 func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_util.WriteBatch, raftWB *engine_util.WriteBatch) (*ApplySnapResult, error) {
 	log.Infof("%v begin to apply snapshot", ps.Tag)
