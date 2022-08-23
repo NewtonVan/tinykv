@@ -17,11 +17,11 @@ package raft
 import (
 	"errors"
 	"fmt"
+	"github.com/pingcap-incubator/tinykv/log"
 	"math/rand"
 	"sort"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
-	"github.com/pingcap/log"
 	"go.uber.org/zap"
 )
 
@@ -172,26 +172,42 @@ func newRaft(c *Config) *Raft {
 		panic(err.Error())
 	}
 	// Your Code Here (2A).
-	hardState, _, err := c.Storage.InitialState()
+	hardState, confState, err := c.Storage.InitialState()
 	if err != nil {
 		panic(err)
 	}
 	r := &Raft{
-		id:               c.ID,
-		Term:             hardState.Term,
-		Vote:             hardState.Vote,
-		RaftLog:          newLog(c.Storage),
-		Prs:              map[uint64]*Progress{},
-		State:            StateFollower,
-		votes:            map[uint64]bool{},
-		msgs:             []pb.Message{},
+		id:      c.ID,
+		Term:    hardState.Term,
+		Vote:    hardState.Vote,
+		RaftLog: newLog(c.Storage),
+		Prs:     map[uint64]*Progress{},
+		State:   StateFollower,
+		votes:   map[uint64]bool{},
+		//msgs:             []pb.Message{},
 		heartbeatTimeout: c.HeartbeatTick,
 		electionTimeout:  c.ElectionTick,
 	}
-	for _, peer := range c.peers {
-		// r.votes[peer] = false
-		// todo
-		r.Prs[peer] = &Progress{}
+
+	// todo
+	if c.peers == nil {
+		c.peers = confState.GetNodes()
+	}
+	for _, id := range c.peers {
+		if id == r.id {
+			r.Prs[id] = &Progress{
+				Match: r.RaftLog.LastIndex(),
+				Next:  r.RaftLog.LastIndex() + 1,
+			}
+		} else {
+			r.Prs[id] = &Progress{
+				Next: r.RaftLog.LastIndex() + 1,
+			}
+		}
+	}
+	r.becomeFollower(r.Term, None)
+	if c.Applied > 0 {
+		r.RaftLog.applied = c.Applied
 	}
 
 	return r
@@ -226,16 +242,13 @@ func (r *Raft) sendAppend(to uint64) bool {
 // sendHeartbeat sends a heartbeat RPC to the given peer.
 func (r *Raft) sendHeartbeat(to uint64) {
 	// Your Code Here (2A).
-	idx := r.Prs[to].Next - 1
-	logTerm, _ := r.RaftLog.Term(idx)
+	commit := min(r.Prs[to].Match, r.RaftLog.committed)
 	r.msgs = append(r.msgs, pb.Message{
 		MsgType: pb.MessageType_MsgHeartbeat,
 		To:      to,
 		From:    r.id,
 		Term:    r.Term,
-		Index:   idx,
-		LogTerm: logTerm,
-		Commit:  r.RaftLog.committed,
+		Commit:  commit,
 	})
 }
 
@@ -288,12 +301,11 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	r.State = StateFollower
 	r.electionElapsed = 0
 	r.randomElectionTimeout = r.electionTimeout + rand.Intn(r.electionTimeout)
+	if lead == None && r.Term != term {
+		r.Vote = None
+	}
 	r.Term = term
 	r.Lead = lead
-	// todo whether add if
-	if lead == None {
-		r.Vote = lead
-	}
 }
 
 // becomeCandidate transform this peer's state to candidate
@@ -444,6 +456,18 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	}
 	r.becomeFollower(m.Term, m.From)
 
+	if r.RaftLog.committed > m.Index {
+		r.msgs = append(r.msgs, pb.Message{
+			MsgType: pb.MessageType_MsgAppendResponse,
+			To:      m.From,
+			From:    r.id,
+			Term:    r.Term,
+			Index:   r.RaftLog.committed,
+			Reject:  false,
+		})
+
+		return
+	}
 	// todo check msg
 	if term, err := r.RaftLog.Term(m.Index); err != nil || term != m.LogTerm {
 		r.msgs = append(r.msgs, pb.Message{
@@ -452,7 +476,6 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 			From:    r.id,
 			Term:    r.Term,
 			Index:   m.Index,
-			LogTerm: m.LogTerm,
 			Reject:  true,
 		})
 
@@ -529,10 +552,12 @@ func (r *Raft) syncCommit(m pb.Message) {
 		return
 	}
 
-	lastNewEntryIndex := m.Index + uint64(len(m.Entries))
+	//lastNewEntryIndex := m.Index + uint64(len(m.Entries))
+	lastNewEntryIndex := r.RaftLog.LastIndex()
 	if m.Commit > lastNewEntryIndex {
 		if lastNewEntryIndex < r.RaftLog.committed {
-			panic("violate monotonicity of committed index")
+			log.Errorf("fkking msg: %+v", m)
+			panic(fmt.Sprintf("violate monotonicity of committed index, commit: %v, idx: %v, len entries: %v, lastNewEntryIdx: %v", m.Commit, m.Index, len(m.Entries), lastNewEntryIndex))
 		}
 		r.RaftLog.committed = lastNewEntryIndex
 	} else {
@@ -705,4 +730,19 @@ func (r *Raft) commitLog(m pb.Message) bool {
 
 	r.RaftLog.committed = index
 	return true
+}
+
+func (r *Raft) hardState() pb.HardState {
+	return pb.HardState{
+		Term:   r.Term,
+		Vote:   r.Vote,
+		Commit: r.RaftLog.committed,
+	}
+}
+
+func (r *Raft) softState() *SoftState {
+	return &SoftState{
+		Lead:      r.Lead,
+		RaftState: r.State,
+	}
 }

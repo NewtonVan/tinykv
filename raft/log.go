@@ -128,7 +128,8 @@ func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 func (l *RaftLog) LastIndex() uint64 {
 	// Your Code Here (2A).
 	if len(l.entries) == 0 {
-		return 0
+		// todo
+		return l.committed
 	}
 
 	return l.entries[len(l.entries)-1].Index
@@ -141,7 +142,10 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 		return 0, nil
 	}
 	if len(l.entries) == 0 {
-		return 0, nil
+		return l.storage.Term(i)
+	}
+	if i < l.entries[0].Index {
+		return l.storage.Term(i)
 	}
 
 	for _, ent := range l.entries {
@@ -167,8 +171,6 @@ func (l *RaftLog) getEntByIndex(i uint64) *pb.Entry {
 	return nil
 }
 
-func (l *RaftLog) Append(e *pb.Entry) error {
+func (l *RaftLog) Append(e *pb.Entry) {
 	l.entries = append(l.entries, *e)
-
-	return nil
 }

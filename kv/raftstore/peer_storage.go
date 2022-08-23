@@ -313,7 +313,8 @@ func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.Write
 		return nil
 	}
 
-	head := ps.raftState.HardState.Commit + 1
+	// todo
+	head, _ := ps.FirstIndex()
 	tail := entries[len(entries)-1].Index
 	if head > tail {
 		return nil
@@ -361,19 +362,13 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	// Hint: you may call `Append()` and `ApplySnapshot()` in this function
 	// Your Code Here (2B/2C).
 	raftWB := &engine_util.WriteBatch{}
-	//kvWB := &engine_util.WriteBatch{}
 	if err := ps.Append(ready.Entries, raftWB); err != nil {
 		return nil, err
 	}
-	//ps.ApplySnapshot(ready.Snapshot, kvWB, raftWB)
-	ps.raftState.HardState = &eraftpb.HardState{
-		Term:                 ready.HardState.Term,
-		Vote:                 ready.HardState.Vote,
-		Commit:               ready.HardState.Commit,
-		XXX_NoUnkeyedLiteral: ready.HardState.XXX_NoUnkeyedLiteral,
-		XXX_unrecognized:     ready.HardState.XXX_unrecognized,
-		XXX_sizecache:        ready.HardState.XXX_sizecache,
+	if !raft.IsEmptyHardState(ready.HardState) {
+		ps.raftState.HardState = &ready.HardState
 	}
+
 	if err := raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState); err != nil {
 		return nil, err
 	}
