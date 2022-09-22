@@ -9,9 +9,10 @@ VOLUME ["/tinykv"]
 
 RUN apt-get update && \
 apt-get install -y build-essential libssl-dev gcc g++ libjsoncpp-dev cmake && \
-apt-get install -y vim wget
+apt-get install -y neovim wget && \
+apt-get install -y git
 
-COPY ./go1.16.14.linux-amd64.tar.gz /root
+COPY ./go1.19.1.linux-amd64.tar.gz /root
 
-RUN tar -C /usr/local -xzf /root/go1.16.14.linux-amd64.tar.gz && \
+RUN tar -C /usr/local -xzf /root/go1.19.1.linux-amd64.tar.gz && \
 echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
