@@ -131,3 +131,28 @@ func isHardStateEqual(a, b pb.HardState) bool {
 func isSoftStateEqual(a, b *SoftState) bool {
 	return a.RaftState == b.RaftState && a.Lead == a.Lead
 }
+
+func ptrSlice2entSlice(iEnt []*pb.Entry) (oEnt []pb.Entry) {
+	for _, ent := range iEnt {
+		oEnt = append(oEnt, *ent)
+	}
+
+	return
+}
+
+func entSlice2ptrSlice(iEnt []pb.Entry) (oEnt []*pb.Entry) {
+	for i := range iEnt {
+		oEnt = append(oEnt, &iEnt[i])
+	}
+
+	return
+}
+
+func insertionSort(sl []uint64) {
+	a, b := 0, len(sl)
+	for i := a + 1; i < b; i++ {
+		for j := i; j > a && sl[j] < sl[j-1]; j-- {
+			sl[j], sl[j-1] = sl[j-1], sl[j]
+		}
+	}
+}
