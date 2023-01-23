@@ -143,7 +143,6 @@ func (c *Cluster) Start() {
 func (c *Cluster) Shutdown() {
 	for _, storeID := range c.simulator.GetStoreIds() {
 		c.simulator.StopStore(storeID)
-		log.Infof("[Cluster.Shutdown] loop store ids: %+v", c.simulator.GetStoreIds())
 	}
 	for _, engine := range c.engines {
 		engine.Close()

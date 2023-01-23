@@ -436,7 +436,7 @@ func (r *Raft) stepFollower(m pb.Message) {
 	switch m.MsgType {
 	case pb.MessageType_MsgPropose:
 		if r.Lead == None {
-			log.Infof("%x no leader at term %x; dropping proposal", r.id, r.Term)
+			log.Debugf("%x no leader at term %x; dropping proposal", r.id, r.Term)
 			return
 		}
 		m.To = r.Lead
@@ -455,7 +455,7 @@ func (r *Raft) stepFollower(m pb.Message) {
 func (r *Raft) stepCandidate(m pb.Message) {
 	switch m.MsgType {
 	case pb.MessageType_MsgPropose:
-		log.Infof("%x no leader at term %x; dropping proposal", r.id, r.Term)
+		log.Debugf("%x no leader at term %x; dropping proposal", r.id, r.Term)
 		return
 	case pb.MessageType_MsgAppend:
 		r.becomeFollower(m.Term, m.From)
@@ -605,7 +605,7 @@ func (r *Raft) bcastReqVote() {
 		if to == r.id {
 			continue
 		}
-		log.Infof("%x [logterm: %d, index: %d] sent MessageType_MsgRequestVote request to %x at term %d",
+		log.Debugf("%x [logterm: %d, index: %d] sent MessageType_MsgRequestVote request to %x at term %d",
 			r.id, r.RaftLog.lastTerm(), r.RaftLog.LastIndex(), to, r.Term)
 		r.send(pb.Message{
 			MsgType: pb.MessageType_MsgRequestVote,
@@ -626,7 +626,7 @@ func (r *Raft) handleMsgHup() {
 		log.Warningf("%x is unpromotable and can not campaign", r.id)
 		return
 	}
-	log.Infof("%x is starting a new election at term %d", r.id, r.Term)
+	log.Debugf("%x is starting a new election at term %d", r.id, r.Term)
 	r.becomeCandidate()
 
 	if VoteWon == r.poll(r.id, true) {

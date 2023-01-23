@@ -285,7 +285,6 @@ func (bs *Raftstore) startWorkers(peers []*peer) {
 }
 
 func (bs *Raftstore) shutDown() {
-	defer log.Errorf("shut down")
 	close(bs.closeCh)
 	bs.wg.Wait()
 	bs.tickDriver.stop()
