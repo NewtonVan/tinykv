@@ -119,38 +119,40 @@ func (d *peerMsgHandler) processNormalRequest(entry *eraftpb.Entry, msg *raft_cm
 		}
 	}
 
+	earlyStop := true
+	defer func() {
+		if earlyStop {
+			kvWB.MustWriteToDB(d.peerStorage.Engines.Kv)
+		}
+	}()
 	if len(d.proposals) <= 0 {
-		kvWB.MustWriteToDB(d.peerStorage.Engines.Kv)
 		return
 	}
 
 	pp := d.proposals[0]
-	// todo
 	for pp.index < entry.Index {
 		NotifyStaleReq(entry.Term, pp.cb)
 		d.proposals = d.proposals[1:]
 		if len(d.proposals) == 0 {
-			kvWB.MustWriteToDB(d.peerStorage.Engines.Kv)
 			return
 		}
 		pp = d.proposals[0]
 	}
 	if pp.index != entry.Index {
-		kvWB.MustWriteToDB(d.peerStorage.Engines.Kv)
 		return
 	}
 	d.proposals = d.proposals[1:]
 	if pp.term != entry.Term {
-		kvWB.MustWriteToDB(d.peerStorage.Engines.Kv)
 		NotifyStaleReq(entry.Term, pp.cb)
 		return
 	}
+
 	if err := util.CheckRegionEpoch(msg, d.Region(), true); err != nil {
-		kvWB.MustWriteToDB(d.peerStorage.Engines.Kv)
 		pp.cb.Done(ErrResp(err))
 		return
 	}
 
+	earlyStop = false
 	resp := &raft_cmdpb.RaftCmdResponse{
 		Header: &raft_cmdpb.RaftResponseHeader{
 			CurrentTerm: d.Term(),
