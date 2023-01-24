@@ -130,19 +130,23 @@ func (d *peerMsgHandler) processNormalRequest(entry *eraftpb.Entry, msg *raft_cm
 		NotifyStaleReq(entry.Term, pp.cb)
 		d.proposals = d.proposals[1:]
 		if len(d.proposals) == 0 {
+			kvWB.MustWriteToDB(d.peerStorage.Engines.Kv)
 			return
 		}
 		pp = d.proposals[0]
 	}
 	if pp.index != entry.Index {
+		kvWB.MustWriteToDB(d.peerStorage.Engines.Kv)
 		return
 	}
 	d.proposals = d.proposals[1:]
 	if pp.term != entry.Term {
+		kvWB.MustWriteToDB(d.peerStorage.Engines.Kv)
 		NotifyStaleReq(entry.Term, pp.cb)
 		return
 	}
 	if err := util.CheckRegionEpoch(msg, d.Region(), true); err != nil {
+		kvWB.MustWriteToDB(d.peerStorage.Engines.Kv)
 		pp.cb.Done(ErrResp(err))
 		return
 	}
@@ -178,7 +182,7 @@ func (d *peerMsgHandler) processNormalRequest(entry *eraftpb.Entry, msg *raft_cm
 			}
 
 			val, err := engine_util.GetCF(d.peerStorage.Engines.Kv, request.Get.Cf, request.Get.Key)
-			if err == nil {
+			if err != nil {
 				BindRespError(resp, err)
 			}
 			resp.Responses = append(resp.Responses, &raft_cmdpb.Response{
