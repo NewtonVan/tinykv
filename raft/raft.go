@@ -267,7 +267,17 @@ func (r *Raft) maybeSendAppend(to uint64, sendIfEmpty bool) bool {
 		return false
 	}
 	if errt != nil || erre != nil {
-		// todo
+		m.MsgType = pb.MessageType_MsgSnapshot
+		// todo handle err
+		snapShot, err := r.RaftLog.snapshot()
+		if err != nil {
+			log.Panicf("[Raft.maybeSendAppend] meet snap err: %v", err)
+		}
+		if IsEmptySnap(&snapShot) {
+			log.Panicf("[Raft.maybeSendAppend] nil snap")
+		}
+		m.Snapshot = &snapShot
+		// todo peer
 	} else {
 		m.MsgType = pb.MessageType_MsgAppend
 		m.Index = idx
@@ -449,6 +459,8 @@ func (r *Raft) stepFollower(m pb.Message) {
 		r.electionElapsed = 0
 		r.Lead = m.From
 		r.handleHeartbeat(m)
+	case pb.MessageType_MsgSnapshot:
+		r.handleSnapshot(m)
 	}
 }
 
@@ -586,6 +598,18 @@ func (r *Raft) syncCommit(m pb.Message) {
 // handleSnapshot handle Snapshot RPC request
 func (r *Raft) handleSnapshot(m pb.Message) {
 	// Your Code Here (2C).
+	r.RaftLog.pendSnapshot(m.GetSnapshot())
+
+	r.Prs = map[uint64]*Progress{}
+	for _, pid := range m.Snapshot.Metadata.ConfState.Nodes {
+		r.Prs[pid] = &Progress{}
+	}
+
+	r.send(pb.Message{
+		MsgType: pb.MessageType_MsgAppendResponse,
+		To:      m.From,
+		Index:   r.RaftLog.committed,
+	})
 }
 
 // addNode add a new node to raft group

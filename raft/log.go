@@ -78,13 +78,13 @@ func newLog(storage Storage) *RaftLog {
 		panic(err)
 	}
 	return &RaftLog{
-		storage:         storage,
-		committed:       hardState.Commit,
-		applied:         0,
-		stabled:         rear,
-		entries:         entries,
-		pendingSnapshot: &pb.Snapshot{},
-		firstOffset:     head,
+		storage:   storage,
+		committed: hardState.Commit,
+		applied:   0,
+		stabled:   rear,
+		entries:   entries,
+		// pendingSnapshot: &pb.Snapshot{},
+		firstOffset: head,
 	}
 }
 
@@ -98,6 +98,9 @@ func (l *RaftLog) maybeCompact() {
 // todo limit size
 // !important maybe use copy
 func (l *RaftLog) sliceWithLimitSize(lo, hi uint64) ([]pb.Entry, error) {
+	if err := l.mustCheckOutOfBound(lo, hi); err != nil {
+		return nil, err
+	}
 	if lo == hi {
 		return nil, nil
 	}
@@ -127,6 +130,9 @@ func (l *RaftLog) maybeFirstIndex() (uint64, bool) {
 func (l *RaftLog) maybeLastIndex() (uint64, bool) {
 	if s := len(l.entries); s != 0 {
 		return l.firstOffset + uint64(s) - 1, true
+	}
+	if l.pendingSnapshot != nil {
+		return l.pendingSnapshot.GetMetadata().GetIndex(), true
 	}
 
 	return 0, false
@@ -218,10 +224,12 @@ func (l *RaftLog) maybeTerm(i uint64) (uint64, bool) {
 
 // todo handle error return by storage
 // Term return the term of the entry in the given index
+// dummyIndex == firstIndex -1 <= i <= lastIndex
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
 	dummyIndex := l.firstIndex() - 1
 	if i < dummyIndex || i > l.LastIndex() {
+		// todo return an err instead?
 		return 0, nil
 	}
 
@@ -356,20 +364,26 @@ func (l *RaftLog) truncateAndAppend(ents []pb.Entry) {
 // todo used as unstable slice
 // return unstable entries [lo,hi)
 func (l *RaftLog) slice(lo, hi uint64) []pb.Entry {
-	l.mustCheckOutOfBound(lo, hi)
+	l.mustCheckOutOfBoundUnstable(lo, hi)
 	return l.entries[lo-l.firstOffset : hi-l.firstOffset]
 }
 
-func (l *RaftLog) mustCheckOutOfBound(lo, hi uint64) {
+// l.firstIndex <= lo <= hi <= l.firstIndex + len(l.entries)
+func (l *RaftLog) mustCheckOutOfBound(lo, hi uint64) error {
 	if lo > hi {
-		log.Errorf("invalid unstable.slice %d > %d", lo, hi)
-		panic("[RaftLog.mustCheckOutofBound] lo bigger than hi")
+		log.Panicf("[RaftLog.mustCheckOutOfBound] invalid unstable.slice %d > %d", lo, hi)
 	}
-	upper := l.firstOffset + uint64(len(l.entries))
-	if lo < l.firstOffset || hi > upper {
-		log.Errorf("unstable.slice[%d,%d) out of bound [%d,%d]", lo, hi, l.firstOffset, upper)
-		panic("[RaftLog.mustCheckOutofBound] out of bounds")
+	fi := l.firstIndex()
+	if lo < fi {
+		return ErrCompacted
 	}
+
+	upper := l.LastIndex() + 1
+	if lo < fi || hi > upper {
+		log.Panicf("[RaftLog.mustCheckOutOfBound] unstable.slice[%d,%d) out of bound [%d,%d]", lo, hi, lo, fi)
+	}
+
+	return nil
 }
 
 func (l *RaftLog) lastTerm() uint64 {
@@ -395,4 +409,22 @@ func (l *RaftLog) zeroTermOnErrCompacted(t uint64, err error) uint64 {
 	log.Panicf("unexpected err: %v", err)
 
 	return 0
+}
+
+func (l *RaftLog) pendSnapshot(snap *pb.Snapshot) {
+	if snap == nil {
+		return
+	}
+	l.pendingSnapshot = snap
+	l.entries = l.entries[:0]
+	l.firstOffset = snap.GetMetadata().Index + 1
+	l.maybeCommit(snap.GetMetadata().GetIndex(), snap.GetMetadata().GetTerm())
+}
+
+func (l *RaftLog) snapshot() (pb.Snapshot, error) {
+	if l.pendingSnapshot != nil {
+		return *l.pendingSnapshot, nil
+	}
+
+	return l.storage.Snapshot()
 }
