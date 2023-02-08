@@ -271,6 +271,11 @@ func (r *Raft) maybeSendAppend(to uint64, sendIfEmpty bool) bool {
 		// todo handle err
 		snapShot, err := r.RaftLog.snapshot()
 		if err != nil {
+			if err == ErrSnapshotTemporarilyUnavailable {
+				log.Debugf("%x failed to send snapshot to %x because snapshot is temporarily unavailable", r.id, to)
+				return false
+
+			}
 			log.Panicf("[Raft.maybeSendAppend] meet snap err: %v", err)
 		}
 		if IsEmptySnap(&snapShot) {
@@ -598,18 +603,52 @@ func (r *Raft) syncCommit(m pb.Message) {
 // handleSnapshot handle Snapshot RPC request
 func (r *Raft) handleSnapshot(m pb.Message) {
 	// Your Code Here (2C).
-	r.RaftLog.pendSnapshot(m.GetSnapshot())
-
-	r.Prs = map[uint64]*Progress{}
-	for _, pid := range m.Snapshot.Metadata.ConfState.Nodes {
-		r.Prs[pid] = &Progress{}
+	sindex, sterm := m.Snapshot.Metadata.Index, m.Snapshot.Metadata.Term
+	if r.restore(m.Snapshot) {
+		log.Infof("%x [commit: %d] restored snapshot [index: %d, term: %d]",
+			r.id, r.RaftLog.committed, sindex, sterm)
+		r.send(pb.Message{
+			MsgType: pb.MessageType_MsgAppendResponse,
+			To:      m.From,
+			Index:   r.RaftLog.LastIndex(),
+		})
+	} else {
+		log.Infof("%x [commit: %d] ignored snapshot [index: %d, term: %d]",
+			r.id, r.RaftLog.committed, sindex, sterm)
+		r.send(pb.Message{
+			MsgType: pb.MessageType_MsgAppendResponse,
+			To:      m.From,
+			Index:   r.RaftLog.committed,
+		})
 	}
 
-	r.send(pb.Message{
-		MsgType: pb.MessageType_MsgAppendResponse,
-		To:      m.From,
-		Index:   r.RaftLog.committed,
-	})
+}
+
+func (r *Raft) restore(s *pb.Snapshot) bool {
+	if s.Metadata.Index <= r.RaftLog.committed {
+		return false
+	}
+	if r.RaftLog.matchTerm(s.Metadata.Index, s.Metadata.Term) {
+		log.Infof("%x [commit: %d, lastindex: %d, lastterm: %d] fast-forwarded commit to snapshot [index: %d, term: %d]",
+			r.id, r.RaftLog.committed, r.RaftLog.LastIndex(), r.RaftLog.lastTerm(), s.Metadata.Index, s.Metadata.Term)
+		r.RaftLog.commitTo(s.Metadata.Index)
+		return false
+	}
+
+	log.Infof("%x [commit: %d, lastindex: %d, lastterm: %d] starts to restore snapshot [index: %d, term: %d]",
+		r.id, r.RaftLog.committed, r.RaftLog.LastIndex(), r.RaftLog.lastTerm(), s.Metadata.Index, s.Metadata.Term)
+	r.RaftLog.restore(s)
+
+	r.Prs = make(map[uint64]*Progress)
+	for _, pid := range s.Metadata.ConfState.Nodes {
+		match, next := uint64(0), r.RaftLog.LastIndex()+1
+		if pid == r.id {
+			match = next - 1
+		}
+		r.setProgress(pid, match, next)
+	}
+
+	return true
 }
 
 // addNode add a new node to raft group
@@ -856,6 +895,10 @@ func (r *Raft) promotable() bool {
 	pr := r.Prs[r.id]
 
 	return pr != nil
+}
+
+func (r *Raft) setProgress(id, match, next uint64) {
+	r.Prs[id] = &Progress{Next: next, Match: match}
 }
 
 func (r *Raft) ResetVotes() {

@@ -1,6 +1,9 @@
 package raft
 
-import "github.com/pingcap-incubator/tinykv/log"
+import (
+	"github.com/pingcap-incubator/tinykv/log"
+	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+)
 
 // [etcd.unstable] u.offset <= lo <= hi <= u.offset+len(u.offset)
 func (l *RaftLog) mustCheckOutOfBoundUnstable(lo, hi uint64) error {
@@ -13,4 +16,16 @@ func (l *RaftLog) mustCheckOutOfBoundUnstable(lo, hi uint64) error {
 	}
 
 	return nil
+}
+
+func (l *RaftLog) restoreUnstable(s *pb.Snapshot) {
+	l.pendingSnapshot = s
+	l.entries = l.entries[:0]
+	l.firstOffset = s.Metadata.Index + 1
+}
+
+func (l *RaftLog) stableSnapTo(i uint64) {
+	if l.pendingSnapshot != nil && l.pendingSnapshot.Metadata.Index == i {
+		l.pendingSnapshot = nil
+	}
 }

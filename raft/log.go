@@ -93,6 +93,22 @@ func newLog(storage Storage) *RaftLog {
 // grow unlimitedly in memory
 func (l *RaftLog) maybeCompact() {
 	// Your Code Here (2C).
+	first, _ := l.storage.FirstIndex()
+	if first > l.firstOffset {
+		// log.Infof("[RaftLog.maybeCompact] need to compact, first: %v, first offset: %v", first, l.firstOffset)
+		if len(l.entries) > 0 {
+			// log.Infof("[RaftLog.maybeCompact] truncate entries: %v-%v", l.entries[0].Index, l.entries[len(l.entries)-1].Index)
+			ents, err := l.getEntries(first)
+			// log.Infof("[RafLog.maybeCompact] ents before copy: %v", ents)
+			if err != nil {
+				log.Errorf("[RaftLog.maybeCompact] Invalid ents, err: %v", err)
+			}
+			l.entries = make([]pb.Entry, len(ents))
+			// dst must have the same size with src
+			copy(l.entries, ents)
+		}
+		l.firstOffset = first
+	}
 }
 
 // todo limit size
@@ -292,8 +308,29 @@ func (l *RaftLog) maybeAppend(m pb.Message) (lastIdx uint64, ok bool) {
 	return 0, false
 }
 
-func (l *RaftLog) stableTo(i uint64) {
+func (l *RaftLog) setStable(i uint64) {
 	l.stabled = i
+}
+
+func (l *RaftLog) stableTo(i, t uint64) {
+	gt, ok := l.maybeTerm(i)
+	if !ok {
+		return
+	}
+
+	if gt == t && i >= l.stabled {
+		l.stabled = i
+	}
+}
+
+func (l *RaftLog) appliedTo(i uint64) {
+	if i == 0 {
+		return
+	}
+	if l.committed < i || i < l.applied {
+		log.Panicf("[RaftLog.appliedTo] applied(%d) is out of range [prevApplied(%d), committed(%d)]", i, l.applied, l.committed)
+	}
+	l.applied = i
 }
 
 func (l *RaftLog) findConflict(ents []pb.Entry) uint64 {
@@ -353,7 +390,7 @@ func (l *RaftLog) truncateAndAppend(ents []pb.Entry) {
 		if after <= l.stabled {
 			// unlike etcd, tiny's offset include both
 			// stabled and unstable parts
-			l.stableTo(after - 1)
+			l.setStable(after - 1)
 		}
 
 		l.entries = append([]pb.Entry{}, l.slice(l.firstOffset, after)...)
@@ -427,4 +464,10 @@ func (l *RaftLog) snapshot() (pb.Snapshot, error) {
 	}
 
 	return l.storage.Snapshot()
+}
+
+func (l *RaftLog) restore(s *pb.Snapshot) {
+	// todo what's difference maybe commit
+	l.restoreUnstable(s)
+	l.commitTo(s.Metadata.Index)
 }
