@@ -97,12 +97,23 @@ func (d *peerMsgHandler) process(entry *eraftpb.Entry, kvWB *engine_util.WriteBa
 
 func (d *peerMsgHandler) processNormalEntry(entry *eraftpb.Entry, msg *raft_cmdpb.RaftCmdRequest, kvWB *engine_util.WriteBatch) {
 	if msg.AdminRequest != nil {
-		// todo
-		log.Errorf("admin!")
+		d.processAdminRequest(entry, msg, kvWB)
 		return
 	}
 
 	d.processNormalRequest(entry, msg, kvWB)
+}
+
+func (d *peerMsgHandler) processAdminRequest(entry *eraftpb.Entry, msg *raft_cmdpb.RaftCmdRequest, kvWB *engine_util.WriteBatch) {
+	defer func() {
+		kvWB.MustWriteToDB(d.peerStorage.Engines.Kv)
+	}()
+	if msg.AdminRequest.CmdType == raft_cmdpb.AdminCmdType_CompactLog {
+		d.peerStorage.applyState.TruncatedState.Index = msg.AdminRequest.CompactLog.CompactIndex
+		d.peerStorage.applyState.TruncatedState.Term = msg.AdminRequest.CompactLog.CompactTerm
+		kvWB.SetMeta(meta.ApplyStateKey(d.regionId), d.peerStorage.applyState)
+		d.ScheduleCompactLog(msg.AdminRequest.CompactLog.CompactIndex)
+	}
 }
 
 func (d *peerMsgHandler) processNormalRequest(entry *eraftpb.Entry, msg *raft_cmdpb.RaftCmdRequest, kvWB *engine_util.WriteBatch) {
