@@ -338,6 +338,14 @@ func (r *Raft) tickElection() {
 
 func (r *Raft) tickHeartBeat() {
 	r.heartbeatElapsed++
+	// todo refactor
+	if r.leadTransferee != None {
+		r.electionElapsed++
+		if r.electionElapsed < r.randomElectionTimeout {
+			return
+		}
+		r.abortLeadTransfer()
+	}
 	if r.heartbeatElapsed < r.heartbeatTimeout {
 		return
 	}
@@ -360,6 +368,8 @@ func (r *Raft) reset(term uint64) {
 
 	r.electionElapsed = 0
 	r.heartbeatElapsed = 0
+	r.PendingConfIndex = 0
+	r.abortLeadTransfer()
 	r.resetRandomElectionTimeout()
 
 	r.ResetVotes()
@@ -401,6 +411,13 @@ func (r *Raft) becomeLeader() {
 	r.reset(r.Term)
 	r.Lead = r.id
 	r.State = StateLeader
+	// Conservatively set the pendingConfIndex to the last index in the
+	// log. There may or may not be a pending config change, but it's
+	// safe to delay any future proposals until we commit all our
+	// pending log entries, and scanning the entire tail of the log
+	// could be expensive.
+	r.PendingConfIndex = r.RaftLog.LastIndex()
+
 	emptyEnt := pb.Entry{Data: nil}
 	if !r.appendEntry(emptyEnt) {
 		log.Panic("empty entry was dropped")
@@ -449,6 +466,13 @@ func (r *Raft) Step(m pb.Message) error {
 
 func (r *Raft) stepFollower(m pb.Message) {
 	switch m.MsgType {
+	case pb.MessageType_MsgTransferLeader:
+		if r.Lead == None {
+			log.Debugf("%x no leader at term %x; stop transfer leader", r.id, r.Term)
+			return
+		}
+		m.To = r.Lead
+		r.send(m)
 	case pb.MessageType_MsgPropose:
 		if r.Lead == None {
 			log.Debugf("%x no leader at term %x; dropping proposal", r.id, r.Term)
@@ -466,6 +490,8 @@ func (r *Raft) stepFollower(m pb.Message) {
 		r.handleHeartbeat(m)
 	case pb.MessageType_MsgSnapshot:
 		r.handleSnapshot(m)
+	case pb.MessageType_MsgTimeoutNow:
+		r.handleMsgTimeoutNow(m)
 	}
 }
 
@@ -489,6 +515,8 @@ func (r *Raft) stepCandidate(m pb.Message) {
 	case pb.MessageType_MsgHeartbeat:
 		r.becomeFollower(m.Term, m.From)
 		r.handleHeartbeat(m)
+	case pb.MessageType_MsgTimeoutNow:
+		r.handleMsgTimeoutNow(m)
 	}
 }
 
@@ -500,6 +528,27 @@ func (r *Raft) stepLeader(m pb.Message) {
 		if len(m.Entries) == 0 {
 			log.Panicf("leader %d meet empty propose", r.id)
 		}
+		// leader & membership change check
+		if _, ok := r.Prs[r.id]; !ok {
+			// If we are not currently a member of the range (i.e. this node
+			// was removed from the configuration while serving as leader),
+			// drop any new proposals.
+			return
+		}
+		if r.leadTransferee != None {
+			log.Infof("[Raft.stepLeader] %v is transferring lead to %v", r.id, r.leadTransferee)
+			return
+		}
+		for i, e := range m.Entries {
+			if e.EntryType != pb.EntryType_EntryConfChange {
+				continue
+			}
+			if r.PendingConfIndex > r.RaftLog.applied {
+				m.Entries[i] = &pb.Entry{EntryType: pb.EntryType_EntryNormal}
+			} else {
+				r.PendingConfIndex = r.RaftLog.LastIndex() + uint64(i) + 1
+			}
+		}
 		r.appendEntry(ptrSlice2entSlice(m.Entries)...)
 		r.bcastAppend()
 	case pb.MessageType_MsgAppendResponse:
@@ -508,6 +557,8 @@ func (r *Raft) stepLeader(m pb.Message) {
 		if r.Prs[m.From].Match < r.RaftLog.LastIndex() {
 			r.sendAppend(m.From)
 		}
+	case pb.MessageType_MsgTransferLeader:
+		r.handleTransferLeader(m)
 	}
 }
 
@@ -654,11 +705,39 @@ func (r *Raft) restore(s *pb.Snapshot) bool {
 // addNode add a new node to raft group
 func (r *Raft) addNode(id uint64) {
 	// Your Code Here (3A).
+	r.PendingConfIndex = 0
+	if _, ok := r.Prs[id]; ok {
+		// Ignore any redundant addNode calls (which can happen because the
+		// initial bootstrapping entries are applied twice).
+		return
+	}
+
+	r.setProgress(id, uint64(0), r.RaftLog.LastIndex()+1)
 }
 
 // removeNode remove a node from raft group
 func (r *Raft) removeNode(id uint64) {
 	// Your Code Here (3A).
+
+	r.delProgress(id)
+	r.PendingConfIndex = 0
+	// do not try to commit or abort transferring
+	// if there is no nodes in the cluster.
+	if len(r.Prs) == 0 {
+		return
+	}
+
+	// pending entries maybe commited
+	// when a config change reduces the quorum requirements.
+	if r.maybeCommit() {
+		r.bcastAppend()
+	}
+	// Abort leader transfer
+	// If the removed node is the leadTransferee
+	// Designed for liveness
+	if r.State == StateLeader && r.leadTransferee == id {
+		r.abortLeadTransfer()
+	}
 }
 
 func (r *Raft) bcastReqVote() {
@@ -771,6 +850,9 @@ func (r *Raft) handleAppendResp(m pb.Message) {
 		r.bcastAppend()
 	} else {
 		r.maybeSendAppend(m.From, false)
+		if r.leadTransferee == m.From && pr.Match == r.RaftLog.LastIndex() {
+			r.sendMsgTimeOutNow(m.From)
+		}
 	}
 	// 	pr.Match = m.Index
 	// 	pr.Next = m.Index + 1
@@ -901,10 +983,15 @@ func (r *Raft) setProgress(id, match, next uint64) {
 	r.Prs[id] = &Progress{Next: next, Match: match}
 }
 
+func (r *Raft) delProgress(id uint64) {
+	delete(r.Prs, id)
+}
+
 func (r *Raft) ResetVotes() {
 	r.votes = map[uint64]bool{}
 }
 
+// todo
 func (r *Raft) appendEntry(es ...pb.Entry) (accepted bool) {
 	offset := r.RaftLog.LastIndex() + 1
 	for i := range es {
@@ -919,4 +1006,53 @@ func (r *Raft) appendEntry(es ...pb.Entry) (accepted bool) {
 	}
 
 	return true
+}
+
+// following fucntion about leader transfer
+func (r *Raft) handleTransferLeader(m pb.Message) {
+	leadTransferee := m.From
+	prevLeadTransferee := r.leadTransferee
+	if prevLeadTransferee != None {
+		if leadTransferee == prevLeadTransferee {
+			return
+		}
+		// todo
+		r.abortLeadTransfer()
+	}
+	if leadTransferee == r.id {
+		return
+	}
+	if _, ok := r.Prs[leadTransferee]; !ok {
+		log.Warnf("[Raft.handleTransferLeader] %v not exists in current leader-%v peers", leadTransferee, r.id)
+		return
+	}
+
+	r.leadTransferee = leadTransferee
+	r.electionElapsed = 0
+
+	if r.Prs[leadTransferee].Match == r.RaftLog.LastIndex() {
+		r.sendMsgTimeOutNow(leadTransferee)
+	} else {
+		r.sendAppend(leadTransferee)
+	}
+}
+
+func (r *Raft) abortLeadTransfer() {
+	r.leadTransferee = None
+}
+
+func (r *Raft) sendMsgTimeOutNow(to uint64) {
+	r.send(pb.Message{
+		MsgType: pb.MessageType_MsgTimeoutNow,
+		To:      to,
+	})
+}
+
+func (r *Raft) handleMsgTimeoutNow(m pb.Message) {
+	r.Step(pb.Message{
+		MsgType: pb.MessageType_MsgHup,
+		To:      r.id,
+		From:    r.id,
+		Term:    r.Term,
+	})
 }
