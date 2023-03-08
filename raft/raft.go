@@ -761,14 +761,14 @@ func (r *Raft) bcastReqVote() {
 
 func (r *Raft) handleMsgHup() {
 	if r.State == StateLeader {
-		log.Debugf("%x ignoring MsgHup because already leader", r.id)
+		log.Debugf("%d ignoring MsgHup because already leader", r.id)
 		return
 	}
 	if !r.promotable() {
-		log.Warningf("%x is unpromotable and can not campaign", r.id)
+		log.Warningf("%d is unpromotable and can not campaign", r.id)
 		return
 	}
-	log.Debugf("%x is starting a new election at term %d", r.id, r.Term)
+	log.Debugf("%d is starting a new election at term %d", r.id, r.Term)
 	r.becomeCandidate()
 
 	if VoteWon == r.poll(r.id, true) {

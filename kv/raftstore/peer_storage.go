@@ -98,9 +98,11 @@ func (ps *PeerStorage) Entries(low, high uint64) ([]eraftpb.Entry, error) {
 	endKey := meta.RaftLogKey(ps.region.Id, high)
 	iter := txn.NewIterator(badger.DefaultIteratorOptions)
 	defer iter.Close()
+	//log.Infof("[ps.Entries] low: %d, hi: %d", low, high)
 	for iter.Seek(startKey); iter.Valid(); iter.Next() {
 		item := iter.Item()
 		if bytes.Compare(item.Key(), endKey) >= 0 {
+			//log.Infof("[ps.Entries] break 1, itemKey: %v, endKey: %v", item.Key(), endKey)
 			break
 		}
 		val, err := item.Value()
@@ -113,6 +115,7 @@ func (ps *PeerStorage) Entries(low, high uint64) ([]eraftpb.Entry, error) {
 		}
 		// May meet gap or has been compacted.
 		if entry.Index != nextIndex {
+			log.Infof("[ps.Entries] meet gap, entryIndex: %d, nextIndex: %d", entry.Index, nextIndex)
 			break
 		}
 		nextIndex++
@@ -123,6 +126,11 @@ func (ps *PeerStorage) Entries(low, high uint64) ([]eraftpb.Entry, error) {
 		return buf, nil
 	}
 	// Here means we don't fetch enough entries.
+	if len(buf) != 0 {
+		log.Infof("%v [ps.Entries] low: %d, hi: %d, buf: %d", ps.Tag, low, high, buf)
+	} else {
+		log.Infof("%v [ps.Entries] empty buf, low: %d, hi: %d", ps.Tag, low, high)
+	}
 	return nil, raft.ErrUnavailable
 }
 
@@ -414,6 +422,7 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 		ps.raftState.HardState = &ready.HardState
 	}
 
+	// todo maybe set after write kv
 	if err := raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState); err != nil {
 		return nil, err
 	}

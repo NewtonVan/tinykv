@@ -7,3 +7,4 @@ _tools
 /vendor
 sources.list
 *.tar.gz
+out/*

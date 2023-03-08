@@ -61,7 +61,6 @@ type RaftLog struct {
 func newLog(storage Storage) *RaftLog {
 	// Your Code Here (2A).
 	var head, rear uint64
-	entries := make([]pb.Entry, 0)
 	head, err := storage.FirstIndex()
 	if err != nil {
 		panic(err)
@@ -70,9 +69,11 @@ func newLog(storage Storage) *RaftLog {
 	if err != nil {
 		panic(err)
 	}
-	if head <= rear {
-		entries, _ = storage.Entries(head, rear+1)
+	entries, err := storage.Entries(head, rear+1)
+	if err != nil {
+		panic(err)
 	}
+
 	hardState, _, err := storage.InitialState()
 	if err != nil {
 		panic(err)
@@ -80,7 +81,7 @@ func newLog(storage Storage) *RaftLog {
 	return &RaftLog{
 		storage:   storage,
 		committed: hardState.Commit,
-		applied:   0,
+		applied:   head - 1,
 		stabled:   rear,
 		entries:   entries,
 		// pendingSnapshot: &pb.Snapshot{},
@@ -106,6 +107,11 @@ func (l *RaftLog) maybeCompact() {
 			l.entries = make([]pb.Entry, len(ents))
 			// dst must have the same size with src
 			copy(l.entries, ents)
+			//if len(ents) != 0 {
+			//	log.Infof("[RafLog.maybeCompact] log.entries after copy, first: %d, last: %d, lth: %v", l.entries[0].Index, l.entries[len(l.entries)-1].Index, len(l.entries))
+			//} else {
+			//	log.Infof("[RafLog.maybeCompact] empty entries")
+			//}
 		}
 		l.firstOffset = first
 	}
@@ -258,6 +264,9 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 		return t, nil
 	}
 	// todo handle error
+	if err == ErrCompacted || err == ErrUnavailable {
+		return 0, err
+	}
 	panic(err)
 }
 
@@ -368,9 +377,8 @@ func (l *RaftLog) append(ents ...pb.Entry) uint64 {
 	if len(ents) == 0 {
 		return l.LastIndex()
 	}
-	if after := ents[0].Index; after < l.committed {
-		log.Errorf("after(%d) is out of range [committed(%d)]", after, l.committed)
-		panic("new entry index can't less than the committed index")
+	if after := ents[0].Index; after <= l.committed {
+		log.Panicf("after(%d) is out of range [committed(%d)]", after, l.committed)
 	}
 
 	l.truncateAndAppend(ents)
