@@ -109,7 +109,8 @@ func (c *Config) validate() error {
 // Progress represents a follower’s progress in the view of the leader. Leader maintains
 // progresses of all followers, and sends entries to the follower based on its progress.
 type Progress struct {
-	Match, Next uint64
+	Match, Next  uint64
+	RecentActive bool
 }
 
 type Raft struct {
@@ -338,14 +339,23 @@ func (r *Raft) tickElection() {
 
 func (r *Raft) tickHeartBeat() {
 	r.heartbeatElapsed++
-	// todo refactor
-	if r.leadTransferee != None {
-		r.electionElapsed++
-		if r.electionElapsed < r.randomElectionTimeout {
-			return
+	r.electionElapsed++
+
+	if r.electionElapsed >= r.electionTimeout {
+		r.electionElapsed = 0
+		r.checkQuorum()
+		if r.leadTransferee != None {
+			r.abortLeadTransfer()
 		}
-		r.abortLeadTransfer()
 	}
+	// todo refactor
+	//if r.leadTransferee != None {
+	//	r.electionElapsed++
+	//	if r.electionElapsed < r.randomElectionTimeout {
+	//		return
+	//	}
+	//	r.abortLeadTransfer()
+	//}
 	if r.heartbeatElapsed < r.heartbeatTimeout {
 		return
 	}
@@ -439,9 +449,9 @@ func (r *Raft) Step(m pb.Message) error {
 			r.becomeFollower(m.Term, None)
 		}
 	case m.Term < r.Term:
-		if m.MsgType == pb.MessageType_MsgHeartbeat || m.MsgType == pb.MessageType_MsgAppend {
-			r.send(pb.Message{To: m.From, MsgType: pb.MessageType_MsgAppendResponse})
-		}
+		//if m.MsgType == pb.MessageType_MsgHeartbeat || m.MsgType == pb.MessageType_MsgAppend {
+		//	r.send(pb.Message{To: m.From, MsgType: pb.MessageType_MsgAppendResponse})
+		//}
 		return nil
 	}
 
@@ -552,8 +562,10 @@ func (r *Raft) stepLeader(m pb.Message) {
 		r.appendEntry(ptrSlice2entSlice(m.Entries)...)
 		r.bcastAppend()
 	case pb.MessageType_MsgAppendResponse:
+		r.activePeer(m.From)
 		r.handleAppendResp(m)
 	case pb.MessageType_MsgHeartbeatResponse:
+		r.activePeer(m.From)
 		if r.Prs[m.From].Match < r.RaftLog.LastIndex() {
 			r.sendAppend(m.From)
 		}
@@ -1055,4 +1067,35 @@ func (r *Raft) handleMsgTimeoutNow(m pb.Message) {
 		From:    r.id,
 		Term:    r.Term,
 	})
+}
+
+func (r *Raft) checkQuorum() {
+	if !r.checkQuorumActive() {
+		r.becomeFollower(r.Term, None)
+	}
+}
+
+func (r *Raft) checkQuorumActive() bool {
+	var act int
+	for id := range r.Prs {
+		if id == r.id {
+			act++
+			continue
+		}
+		if r.Prs[id].RecentActive {
+			act++
+		}
+		r.Prs[id].RecentActive = false
+	}
+
+	return act >= r.quorum()
+}
+
+func (r *Raft) activePeer(uid uint64) {
+	pr, pok := r.Prs[uid]
+	if !pok {
+		log.Warnf("[Raft.activePeer] %d no peer %d", r.id, uid)
+		return
+	}
+	pr.RecentActive = true
 }
