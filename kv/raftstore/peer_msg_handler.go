@@ -72,13 +72,13 @@ func (d *peerMsgHandler) HandleRaftReady() {
 
 	for _, entry := range rd.CommittedEntries {
 		kvWB := new(engine_util.WriteBatch)
-		d.process(&entry, kvWB)
-
+		// todo apply data first, update applyState in the end
 		d.peerStorage.applyState.AppliedIndex = entry.Index
 		if err := kvWB.SetMeta(meta.ApplyStateKey(d.regionId), d.peerStorage.applyState); err != nil {
 			panic(err)
 		}
 
+		d.process(&entry, kvWB)
 		if d.stopped {
 			return
 		}

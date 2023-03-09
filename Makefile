@@ -131,8 +131,3 @@ project4b:
 
 project4c:
 	$(GOTEST) ./kv/transaction/... -run 4C
-
-onesplit3b:
-	$(TEST_CLEAN)
-	$(GOTEST) ./kv/test_raftstore -run ^TestOneSplit3B$ || true
-	$(TEST_CLEAN)
