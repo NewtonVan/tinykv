@@ -263,7 +263,6 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 	if err == nil {
 		return t, nil
 	}
-	// todo handle error
 	if err == ErrCompacted || err == ErrUnavailable {
 		return 0, err
 	}
