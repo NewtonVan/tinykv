@@ -268,8 +268,10 @@ func (r *Raft) maybeSendAppend(to uint64, sendIfEmpty bool) bool {
 		return false
 	}
 	if errt != nil || erre != nil {
+		if !pr.RecentActive {
+			return false
+		}
 		m.MsgType = pb.MessageType_MsgSnapshot
-		// todo handle err
 		snapShot, err := r.RaftLog.snapshot()
 		if err != nil {
 			if err == ErrSnapshotTemporarilyUnavailable {
@@ -449,6 +451,7 @@ func (r *Raft) Step(m pb.Message) error {
 			r.becomeFollower(m.Term, None)
 		}
 	case m.Term < r.Term:
+		// ignore followed with early etcd
 		//if m.MsgType == pb.MessageType_MsgHeartbeat || m.MsgType == pb.MessageType_MsgAppend {
 		//	r.send(pb.Message{To: m.From, MsgType: pb.MessageType_MsgAppendResponse})
 		//}
@@ -522,6 +525,9 @@ func (r *Raft) stepCandidate(m pb.Message) {
 		case VoteLost:
 			r.becomeFollower(r.Term, None)
 		}
+	case pb.MessageType_MsgSnapshot:
+		r.becomeFollower(m.Term, m.From)
+		r.handleSnapshot(m)
 	case pb.MessageType_MsgHeartbeat:
 		r.becomeFollower(m.Term, m.From)
 		r.handleHeartbeat(m)

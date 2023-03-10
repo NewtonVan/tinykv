@@ -136,3 +136,15 @@ OneSplit3b:
 	$(TEST_CLEAN)
 	$(GOTEST) ./kv/test_raftstore -run ^TestOneSplit3B$ || true
 	$(TEST_CLEAN)
+
+3blast:
+	$(TEST_CLEAN)
+	$(GOTEST) ./kv/test_raftstore -run ^TestSplitConfChangeSnapshotUnreliableRecoverConcurrentPartition3B$ || true
+	$(TEST_CLEAN)
+
+keynotinregion:
+	$(TEST_CLEAN)
+	$(GOTEST) ./kv/test_raftstore -run ^TestConfChangeSnapshotUnreliableRecover3B$ || true
+	$(GOTEST) ./kv/test_raftstore -run ^TestSplitRecoverManyClients3B$ || true
+	$(GOTEST) ./kv/test_raftstore -run ^TestSplitConfChangeSnapshotUnreliableRecoverConcurrentPartition3B$ || true
+	$(TEST_CLEAN)
