@@ -346,9 +346,12 @@ func (r *Raft) tickHeartBeat() {
 	if r.electionElapsed >= r.electionTimeout {
 		r.electionElapsed = 0
 		r.checkQuorum()
-		if r.leadTransferee != None {
+		if r.State == StateLeader && r.leadTransferee != None {
 			r.abortLeadTransfer()
 		}
+	}
+	if r.State != StateLeader {
+		return
 	}
 	// todo refactor
 	//if r.leadTransferee != None {
@@ -452,9 +455,9 @@ func (r *Raft) Step(m pb.Message) error {
 		}
 	case m.Term < r.Term:
 		// ignore followed with early etcd
-		//if m.MsgType == pb.MessageType_MsgHeartbeat || m.MsgType == pb.MessageType_MsgAppend {
-		//	r.send(pb.Message{To: m.From, MsgType: pb.MessageType_MsgAppendResponse})
-		//}
+		if r.State == StateLeader && (m.MsgType == pb.MessageType_MsgHeartbeat || m.MsgType == pb.MessageType_MsgAppend) {
+			r.send(pb.Message{To: m.From, MsgType: pb.MessageType_MsgAppendResponse})
+		}
 		return nil
 	}
 
@@ -555,6 +558,7 @@ func (r *Raft) stepLeader(m pb.Message) {
 			log.Infof("[Raft.stepLeader] %v is transferring lead to %v", r.id, r.leadTransferee)
 			return
 		}
+		r.activePeer(m.From)
 		for i, e := range m.Entries {
 			if e.EntryType != pb.EntryType_EntryConfChange {
 				continue
