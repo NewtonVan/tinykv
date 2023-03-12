@@ -394,7 +394,6 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 		Region:     snapData.Region,
 	}
 	meta.WriteRegionState(kvWB, snapData.Region, rspb.PeerState_Normal)
-	ps.SetRegion(snapData.Region)
 
 	return result, nil
 }

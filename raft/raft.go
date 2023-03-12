@@ -1102,6 +1102,9 @@ func (r *Raft) checkQuorumActive() bool {
 }
 
 func (r *Raft) activePeer(uid uint64) {
+	if uid == 0 {
+		return
+	}
 	pr, pok := r.Prs[uid]
 	if !pok {
 		log.Warnf("[Raft.activePeer] %d no peer %d", r.id, uid)

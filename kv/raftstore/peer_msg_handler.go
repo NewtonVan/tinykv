@@ -61,7 +61,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 			storeMeta := d.ctx.storeMeta
 			storeMeta.Lock()
 			defer storeMeta.Unlock()
-			storeMeta.regions[d.regionId] = d.peerStorage.region
+			storeMeta.regions[d.regionId] = snapResult.Region
 			storeMeta.regionRanges.Delete(&regionItem{region: snapResult.PrevRegion})
 			storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: snapResult.Region})
 		}()
@@ -157,7 +157,7 @@ func (d *peerMsgHandler) searchRegionPeer(id uint64) int {
 		}
 	}
 
-	return len(d.Region().Peers)
+	return -1
 }
 
 func (d *peerMsgHandler) processConfChange(entry *eraftpb.Entry, cc *eraftpb.ConfChange, kvWB *engine_util.WriteBatch) {
@@ -176,7 +176,7 @@ func (d *peerMsgHandler) processConfChange(entry *eraftpb.Entry, cc *eraftpb.Con
 	switch cc.ChangeType {
 	case eraftpb.ConfChangeType_AddNode:
 		n := d.searchRegionPeer(cc.NodeId)
-		if n != len(d.Region().Peers) {
+		if n != -1 {
 			updateStatus = false
 			break
 		}
@@ -191,7 +191,7 @@ func (d *peerMsgHandler) processConfChange(entry *eraftpb.Entry, cc *eraftpb.Con
 		}
 
 		n := d.searchRegionPeer(cc.NodeId)
-		if n >= len(d.Region().Peers) {
+		if n == -1 {
 			updateStatus = false
 			break
 		}
@@ -277,10 +277,10 @@ func (d *peerMsgHandler) processAdminRequest(entry *eraftpb.Entry, msg *raft_cmd
 			return
 		}
 		newPeers := make([]*metapb.Peer, 0, len(splitReq.NewPeerIds))
-		for i, peerId := range splitReq.NewPeerIds {
+		for i, p := range oldRegion.Peers {
 			newPeers = append(newPeers, &metapb.Peer{
-				Id:      peerId,
-				StoreId: oldRegion.Peers[i].StoreId,
+				Id:      splitReq.NewPeerIds[i],
+				StoreId: p.StoreId,
 			})
 		}
 
