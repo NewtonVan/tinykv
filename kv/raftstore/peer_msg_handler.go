@@ -62,7 +62,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 			storeMeta.Lock()
 			defer storeMeta.Unlock()
 			storeMeta.regions[d.regionId] = snapResult.Region
-			storeMeta.regionRanges.Delete(&regionItem{region: snapResult.PrevRegion})
+			// storeMeta.regionRanges.Delete(&regionItem{region: snapResult.PrevRegion})
 			storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: snapResult.Region})
 		}()
 	}
