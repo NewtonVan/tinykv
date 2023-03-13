@@ -393,6 +393,7 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 		PrevRegion: ps.region,
 		Region:     snapData.Region,
 	}
+	ps.SetRegion(snapData.Region)
 	meta.WriteRegionState(kvWB, snapData.Region, rspb.PeerState_Normal)
 
 	return result, nil
@@ -422,12 +423,12 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	}
 
 	// todo maybe set after write kv
+	kvWB.MustWriteToDB(ps.Engines.Kv)
 	if err := raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState); err != nil {
 		return nil, err
 	}
 
 	raftWB.MustWriteToDB(ps.Engines.Raft)
-	kvWB.MustWriteToDB(ps.Engines.Kv)
 
 	return result, nil
 }

@@ -56,7 +56,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		panic(err)
 	}
 	if snapResult != nil && !util.RegionEqual(snapResult.PrevRegion, snapResult.Region) {
-		d.peerStorage.SetRegion(snapResult.Region)
+		//d.peerStorage.SetRegion(snapResult.Region)
 		func() {
 			storeMeta := d.ctx.storeMeta
 			storeMeta.Lock()

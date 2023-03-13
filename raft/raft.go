@@ -455,8 +455,12 @@ func (r *Raft) Step(m pb.Message) error {
 		}
 	case m.Term < r.Term:
 		// ignore followed with early etcd
-		if r.State == StateLeader && (m.MsgType == pb.MessageType_MsgHeartbeat || m.MsgType == pb.MessageType_MsgAppend) {
-			r.send(pb.Message{To: m.From, MsgType: pb.MessageType_MsgAppendResponse})
+		if m.MsgType == pb.MessageType_MsgHeartbeat || m.MsgType == pb.MessageType_MsgAppend {
+			if r.State == StateLeader {
+				r.send(pb.Message{To: m.From, MsgType: pb.MessageType_MsgAppendResponse})
+			} else if r.RaftLog.committed > m.Commit {
+				r.send(pb.Message{To: m.From, MsgType: pb.MessageType_MsgAppendResponse})
+			}
 		}
 		return nil
 	}
