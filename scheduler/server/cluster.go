@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/gogo/protobuf/proto"
+	"github.com/pingcap-incubator/tinykv/kv/raftstore/util"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/metapb"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/schedulerpb"
 	"github.com/pingcap-incubator/tinykv/scheduler/pkg/logutil"
@@ -280,7 +281,77 @@ func (c *RaftCluster) handleStoreHeartbeat(stats *schedulerpb.StoreStats) error 
 func (c *RaftCluster) processRegionHeartbeat(region *core.RegionInfo) error {
 	// Your Code Here (3C).
 
+	if region.GetRegionEpoch() == nil {
+		return errors.Errorf("[RaftCluster.processRegionHeartbeat] nil region epoch")
+	}
+	if err := c.staleRegion(region); err != nil {
+		return err
+	}
+
+	//skip := true
+	//if c.leaderChanged(region) {
+	//	skip = false
+	//}
+	//if c.pendingPeer(region) {
+	//	skip = false
+	//}
+	//if c.approximateSizeChanged(region) {
+	//	skip = false
+	//}
+	//
+	//if skip {
+	//	return nil
+	//}
+
+	c.core.PutRegion(region)
+	for sid := range region.GetStoreIds() {
+		c.updateStoreStatusLocked(sid)
+	}
+
 	return nil
+}
+
+func (c *RaftCluster) staleRegion(region *core.RegionInfo) error {
+	oRegion := c.GetRegion(region.GetID())
+	if oRegion != nil && util.IsEpochStale(region.GetRegionEpoch(), oRegion.GetRegionEpoch()) {
+		return ErrRegionIsStale(region.GetMeta(), oRegion.GetMeta())
+	}
+
+	regions := c.ScanRegions(region.GetStartKey(), region.GetEndKey(), -1)
+	for _, info := range regions {
+		if util.IsEpochStale(region.GetRegionEpoch(), info.GetRegionEpoch()) {
+			return ErrRegionIsStale(region.GetMeta(), info.GetMeta())
+		}
+	}
+
+	return nil
+}
+
+func (c *RaftCluster) leaderChanged(region *core.RegionInfo) bool {
+	oRegion := c.GetRegion(region.GetID())
+	if oRegion != nil && oRegion.GetLeader() != nil && util.PeerEqual(oRegion.GetLeader(), region.GetLeader()) {
+		return false
+	}
+
+	return true
+}
+
+func (c *RaftCluster) pendingPeer(region *core.RegionInfo) bool {
+	oRegion := c.GetRegion(region.GetID())
+	if (oRegion != nil && len(oRegion.GetPendingPeers()) != 0) || len(region.GetPendingPeers()) != 0 {
+		return true
+	}
+
+	return false
+}
+
+func (c *RaftCluster) approximateSizeChanged(region *core.RegionInfo) bool {
+	oRegion := c.GetRegion(region.GetID())
+	if oRegion != nil && oRegion.GetApproximateSize() == region.GetApproximateSize() {
+		return false
+	}
+
+	return true
 }
 
 func (c *RaftCluster) updateStoreStatusLocked(id uint64) {
