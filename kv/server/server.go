@@ -252,7 +252,7 @@ func (server *Server) KvCommit(_ context.Context, req *kvrpcpb.CommitRequest) (*
 			return nil, err
 		}
 		if write != nil && write.Kind != mvcc.WriteKindRollback {
-			return resp, nil
+			continue
 		}
 		lock, err := txn.GetLock(k)
 		if err != nil {
